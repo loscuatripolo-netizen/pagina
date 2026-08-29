@@ -1306,13 +1306,9 @@
     statusEl.classList.toggle('ok', !!isOk);
   }
 
-  // Página de demostración, sin servidor detrás (por eso no hay fetch a /api/request aquí --
-  // eso ya está escrito y probado en api/request.js, para cuando esto se despliegue de verdad
-  // en Vercel con Google Sheets + Resend). Mientras tanto, "enviar solicitud" abre el cliente
-  // de correo del propio visitante con el email ya redactado, para poder probar el ciclo
-  // completo -- y que llegue de verdad -- sin necesitar ninguna cuenta ni backend.
-  var OWNER_EMAIL = 'loscuatripolo@gmail.com';
-
+  // Conectado al backend real: api/request.js comprueba disponibilidad, anota la solicitud
+  // en el Google Sheet (o en los datos de demo si MOCK_SHEET no está desactivado) y manda
+  // los emails al dueño y al huésped mediante Resend (lib/email.js).
   formEl.addEventListener('submit', function(e){
     e.preventDefault();
     if (!current.checkin || !current.checkout) return;
@@ -1322,28 +1318,38 @@
     var guestPhone = document.getElementById('rmGuestPhone').value;
     var guests = document.getElementById('rmGuests').value;
 
-    var subject = 'Solicitud de reserva: ' + current.room + ', ' + current.checkin + ' a ' + current.checkout;
-    var body = [
-      'Nueva solicitud de reserva -- Bisabuela Martina',
-      '',
-      'Habitación: ' + current.room,
-      'Entrada: ' + current.checkin,
-      'Salida: ' + current.checkout + ' (' + current.nights + ' noches)',
-      'Huéspedes: ' + (guests || '?'),
-      'Precio orientativo: ' + current.total + ' €',
-      '',
-      'Huésped: ' + guestName,
-      'Email: ' + guestEmail,
-      'Teléfono: ' + (guestPhone || '(no indicado)'),
-      '',
-      'Qué hacer ahora: comprobar disponibilidad real, bloquear las fechas en Booking/Airbnb',
-      'y responder al huésped con un enlace de pago de Stripe.',
-    ].join('\n');
-
-    setStatus('Abriendo tu correo con la solicitud lista para enviar a la posada…', false, true);
+    setStatus('Enviando tu solicitud…', false, false);
     submitBtn.disabled = true;
-    window.location.href = 'mailto:' + OWNER_EMAIL + '?subject=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(body);
-    setTimeout(function(){ submitBtn.disabled = false; }, 1500);
+
+    fetch('/api/request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        roomName: current.room,
+        checkin: current.checkin,
+        checkout: current.checkout,
+        guests: guests,
+        guestName: guestName,
+        guestEmail: guestEmail,
+        guestPhone: guestPhone
+      })
+    })
+      .then(function(res){
+        return res.json().catch(function(){ return {}; }).then(function(data){ return { ok: res.ok, data: data }; });
+      })
+      .then(function(result){
+        submitBtn.disabled = false;
+        if (result.ok) {
+          setStatus('¡Solicitud enviada! Te escribiremos a ' + guestEmail + ' en cuanto confirmemos disponibilidad.', false, true);
+          formEl.reset();
+        } else {
+          setStatus((result.data && result.data.error) || 'No se pudo enviar la solicitud ahora mismo. Inténtalo de nuevo en un momento.', true, false);
+        }
+      })
+      .catch(function(){
+        submitBtn.disabled = false;
+        setStatus('No se pudo enviar la solicitud ahora mismo. Comprueba tu conexión e inténtalo de nuevo.', true, false);
+      });
   });
 })();
 </script>
