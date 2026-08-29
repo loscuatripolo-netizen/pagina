@@ -1,0 +1,5 @@
+{
+    "rewrites": [
+          { "source": "/", "destination": "/bisabuela-martina-motor.html" }
+    ]
+}
