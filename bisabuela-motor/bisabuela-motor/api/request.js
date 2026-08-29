@@ -3,7 +3,7 @@
 //
 // No cobra nada -- eso lo hace el dueño a mano con un Payment Link de Stripe. Este endpoint:
 //   1. Vuelve a comprobar disponibilidad (para no aceptar una solicitud de algo ya ocupado).
-//   2. Añade una fila "Pendiente-Web" en el Google Sheet, para que esas fechas dejen de
+//   2. Marca esas fechas como "Ocupado" en el Google Sheet, para que esas fechas dejen de
 //      ofrecerse a otra persona mientras el dueño decide.
 //   3. Manda un email al dueño con todos los datos y los siguientes pasos.
 //   4. Manda un email de confirmación al huésped.
