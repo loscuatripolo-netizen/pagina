@@ -4,11 +4,11 @@
 // normal -- ver README.md para cómo se crea y se comparte con la hoja).
 //
 // La hoja tiene 7 pestañas, una por cada habitación física (unidad), con columnas
-// Fecha | Día | Estado (fila 1 es la cabecera, los datos empiezan en la fila 2).
-// Para marcar un día como ocupado, el dueño escribe cualquier texto en la columna
-// "Estado" de esa fila (por ejemplo "Ocupado" o el nombre del huésped); dejarla en
-// blanco significa que ese día está libre. El propio calendario ya viene generado
-// con las fechas puestas -- solo hay que rellenar la columna Estado a mano.
+// Fecha | Día | Estado (fila 1 es la cabecera, los datos empiezan en la fila 2). La
+// columna Estado tiene un desplegable con dos opciones: "Libre" u "Ocupado". Para marcar
+// un día como ocupado, el dueño cambia esa celda a "Ocupado"; en blanco o "Libre" es que
+// ese día está libre. El propio calendario ya viene generado con las fechas puestas --
+// solo hay que cambiar el desplegable de Estado a mano.
 
 const mock = require('./mock-data');
 
@@ -65,6 +65,13 @@ function dateForRow(row) {
   return addDays(START_DATE, row - 2);
 }
 
+// Una celda de la columna Estado cuenta como "ocupado" solo si dice literalmente
+// "Ocupado" (el desplegable de validación de datos solo permite "Libre" u "Ocupado") --
+// cualquier otra cosa (en blanco, o "Libre") es un día libre.
+function isOcupado(cellValue) {
+  return String(cellValue || '').trim().toLowerCase() === 'ocupado';
+}
+
 // Lee las 7 pestañas de calendario y las convierte en bloques ocupados
 // { room, checkin, checkout, origin, notes }, igual que si viniera de una lista de
 // reservas -- así el resto del código (getAvailability, getMonthAvailability...) no
@@ -83,7 +90,7 @@ async function readRows() {
       const values = res.data.values || [];
       let blockStartRow = null;
       for (let i = 0; i < values.length; i++) {
-        const occupied = Boolean(values[i][0] && values[i][0].trim());
+        const occupied = isOcupado(values[i][0]);
         const row = i + 2;
         if (occupied && blockStartRow === null) blockStartRow = row;
         if (!occupied && blockStartRow !== null) {
@@ -114,16 +121,15 @@ async function findFreeUnit(roomName, checkin, checkout) {
       range: `'${unitName}'!C${rowStart}:C${rowEndExclusive - 1}`,
     });
     const values = res.data.values || [];
-    const allFree = values.every((r) => !r[0] || !String(r[0]).trim());
+    const allFree = values.every((r) => !isOcupado(r[0]));
     if (allFree) return unitName;
   }
   return null;
 }
 
-// Marca como ocupados, en una unidad libre de ese tipo de habitación, todos los días
-// del rango (usado por api/request.js para dejar la solicitud como "Pendiente-Web" en
-// cuanto entra, y así no se le ofrezca dos veces a otra persona mientras el dueño la
-// confirma).
+// Marca como "Ocupado", en una unidad libre de ese tipo de habitación, todos los días
+// del rango (usado por api/request.js en cuanto entra una solicitud web, para que esas
+// fechas no se le ofrezcan a otra persona mientras el dueño la confirma).
 async function appendRow({ room, checkin, checkout, origin, notes }) {
   if (MOCK) {
     mock.MOCK_ROWS.push({ room, checkin, checkout, origin, notes });
@@ -138,8 +144,11 @@ async function appendRow({ room, checkin, checkout, origin, notes }) {
   const sheets = await getClient();
   const rowStart = rowForDate(checkin);
   const rowEndExclusive = rowForDate(checkout);
+  // La columna Estado solo admite "Libre" u "Ocupado" (desplegable de validación de
+  // datos) -- el nombre del huésped y demás detalles van en el email al dueño, no en la
+  // hoja.
   const values = [];
-  for (let r = rowStart; r < rowEndExclusive; r++) values.push([origin]);
+  for (let r = rowStart; r < rowEndExclusive; r++) values.push(['Ocupado']);
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: spreadsheetId(),
