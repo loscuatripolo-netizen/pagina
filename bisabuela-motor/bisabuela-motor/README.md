@@ -10,9 +10,22 @@ Sheet que gestiona el propio dueño.
 ## Estado ahora mismo
 
 Todo el código del backend (Google Sheets + email) está escrito y probado en **modo
-demostración** (`MOCK_SHEET=true`), con los mismos datos que hay en
-`calendario-bisabuela-martina.xlsx`: una reserva de ejemplo (Doble, por Booking). Ese es el
-código pensado para cuando esto se despliegue de verdad en Vercel (ver más abajo).
+demostración** (`MOCK_SHEET=true`). Ese es el código pensado para cuando esto se
+despliegue de verdad en Vercel (ver más abajo).
+
+El "calendario" real es este Google Sheet, ya creado:
+[Calendario Bisabuela Martina](https://docs.google.com/spreadsheets/d/11dae-73L9JZUTUOP3h1lz-1COLled2UvR_9lc93kH3o/edit).
+Tiene 7 pestañas, una por cada habitación física (2x Doble Basic, 3x Doble, Triple y
+Cuádruple), cada una con un calendario día a día de la temporada (junio-agosto) y una
+columna "Estado" con un desplegable Libre/Ocupado. Para bloquear un día a mano (por una
+reserva de Booking/Airbnb, por ejemplo), basta con abrir la pestaña de esa habitación y
+poner "Ocupado" en las filas de esas fechas -- se refleja solo en la web en cuanto esté
+conectado (siguiente sección). El propio código, al recibir una solicitud por la web,
+marca así de "Ocupado" las fechas correspondientes para que no se le ofrezcan a otra
+persona mientras el dueño la confirma.
+
+Como el calendario solo cubre junio-agosto de la temporada que viene, hay que avisar para
+regenerarlo (pedírmelo) según se acerque cada nueva temporada.
 
 La página publicada como demo (`bisabuela-martina-motor.html`) es distinta: al no tener un
 servidor detrás todavía, no llama a ese backend -- lleva sus propios datos de ejemplo
@@ -33,8 +46,10 @@ configuradas ahí:
 
 ## Lo que falta para que sea real
 
-1. **Subir `calendario-bisabuela-martina.xlsx` a Google Sheets** (Archivo → Importar en
-   sheets.google.com) y compartirlo con el dueño para que lo pueda editar desde su cuenta.
+1. ~~Subir el calendario a Google Sheets~~ -- ya está creado: [Calendario Bisabuela
+   Martina](https://docs.google.com/spreadsheets/d/11dae-73L9JZUTUOP3h1lz-1COLled2UvR_9lc93kH3o/edit)
+   (7 pestañas, una por habitación). Solo falta el paso 2 de abajo para conectarlo de
+   verdad a la web.
 2. **Crear la cuenta de servicio de Google** que usa el código para leer y escribir en esa
    hoja (ver más abajo). Esto lo puede montar guillem con su propia cuenta de Google, no
    depende de la posada.
@@ -56,10 +71,12 @@ que el que planteamos al principio.
 2. Crear una cuenta de servicio (IAM y administración → Cuentas de servicio → Crear), y
    generar una clave en formato JSON -- se descarga un archivo.
 3. Copiar el contenido de ese archivo JSON, en una sola línea, a `GOOGLE_SERVICE_ACCOUNT_JSON`.
-4. Compartir el Google Sheet real con el email de esa cuenta de servicio (algo tipo
+4. Compartir el [Google Sheet](https://docs.google.com/spreadsheets/d/11dae-73L9JZUTUOP3h1lz-1COLled2UvR_9lc93kH3o/edit)
+   con el email de esa cuenta de servicio (algo tipo
    `nombre@proyecto.iam.gserviceaccount.com`), como si fuera un colaborador más, con
    permiso de "Editor".
-5. Copiar el ID de la hoja (el trozo largo de la URL) a `SHEET_SPREADSHEET_ID`.
+5. Copiar el ID de la hoja (`11dae-73L9JZUTUOP3h1lz-1COLled2UvR_9lc93kH3o`, el trozo largo
+   de la URL) a `SHEET_SPREADSHEET_ID`.
 
 ## Desplegar
 
@@ -82,8 +99,9 @@ Pensado para Vercel (ya tenéis GitHub conectado a Vercel de antes):
    importe que corresponda, y se lo manda al huésped respondiendo a su email.
 5. El huésped paga en ese enlace -- eso ya lo gestiona Stripe directamente, no pasa por
    nuestro código.
-6. Cuando entra una reserva por Booking o Airbnb, el dueño añade esa fila a mano en el
-   Google Sheet, para que la web dejе de ofrecer esas fechas.
+6. Cuando entra una reserva por Booking o Airbnb, el dueño marca esas fechas como
+   "Ocupado" en la pestaña de esa habitación del Google Sheet, para que la web deje de
+   ofrecerlas.
 
 ## Riesgo que hay que tener presente
 
