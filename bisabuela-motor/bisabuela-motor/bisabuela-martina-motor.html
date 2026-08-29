@@ -10,6 +10,7 @@
     --hortensia:#565a9e; --hortensia-deep:#40437a; --hortensia-tint:rgba(86,90,158,.10);
     --leaf:#3f5a3f; --leaf-deep:#2d4130; --leaf-tint:rgba(63,90,63,.12);
     --blush:#c97b8a; --blush-deep:#b25f70; --blush-tint:rgba(201,123,138,.14);
+    --full:#c0392b;
     --gold:#a3792f; --gold-soft:#c9a25c;
     --border:rgba(43,48,32,.14); --border-strong:rgba(43,48,32,.26);
     --shadow:0 30px 60px -30px rgba(43,48,32,.35);
@@ -327,7 +328,8 @@
   .cal-day{aspect-ratio:1; display:flex; align-items:center; justify-content:center; border-radius:8px; font-size:.82rem;
     color:var(--ink); cursor:pointer; background:#fff; border:1px solid transparent;}
   .cal-day.blank{visibility:hidden; cursor:default;}
-  .cal-day.past, .cal-day.full{color:var(--ink-faint); background:var(--linen-2); text-decoration:line-through; cursor:not-allowed;}
+  .cal-day.past{color:var(--ink-faint); background:var(--linen-2); text-decoration:line-through; cursor:not-allowed;}
+  .cal-day.full{color:#fff; background:var(--full); text-decoration:line-through; cursor:not-allowed;}
   .cal-day.in-range{background:var(--hortensia-tint); color:var(--hortensia-deep);}
   .cal-day.selected{background:var(--hortensia); color:var(--linen); font-weight:700;}
   .cal-legend{display:flex; gap:16px; margin-top:12px; font-family:'Space Mono'; font-size:.68rem; color:var(--ink-faint);}
@@ -862,7 +864,7 @@
         <div class="cal-legend">
           <span><i style="background:#fff; border:1px solid var(--border-strong);"></i>Libre</span>
           <span><i style="background:var(--hortensia);"></i>Elegido</span>
-          <span><i style="background:var(--linen-2);"></i>Completo</span>
+          <span><i style="background:var(--full);"></i>Completo</span>
         </div>
         <p class="cal-note">La posada abre de junio a agosto -- el calendario solo muestra esos meses.</p>
 
@@ -1165,7 +1167,7 @@
     return days;
   }
 
-  var current = { room: null, viewYear: 0, viewMonth: 0, days: {}, checkin: null, checkout: null, total: 0, nights: 0 };
+  var current = { room: null, viewYear: 0, viewMonth: 0, days: {}, checkin: null, checkout: null, total: 0, nights: 0, daysRequestId: 0 };
 
   function openRoom(roomName){
     current.room = roomName;
@@ -1201,8 +1203,21 @@
   document.addEventListener('keydown', function(e){ if (e.key === 'Escape' && overlay.classList.contains('open')) closeRoom(); });
 
   function loadMonth(){
-    current.days = computeMonthDays(current.room, current.viewYear, current.viewMonth);
-    renderCalendar();
+    var room = current.room, year = current.viewYear, month = current.viewMonth;
+    var requestId = ++current.daysRequestId;
+    calLabel.textContent = MESES[month - 1] + ' ' + year;
+    fetch('/api/availability?room=' + encodeURIComponent(room) + '&year=' + year + '&month=' + month)
+      .then(function(res){ return res.json(); })
+      .then(function(data){
+        if (requestId !== current.daysRequestId) return; // ya se navegó a otro mes
+        current.days = (data && data.days) || {};
+        renderCalendar();
+      })
+      .catch(function(){
+        if (requestId !== current.daysRequestId) return;
+        current.days = computeMonthDays(room, year, month); // sin conexión: usa el cálculo local como último recurso
+        renderCalendar();
+      });
     calPrev.disabled = (current.viewYear === SY && current.viewMonth <= SEASON_MIN_MONTH);
     calNext.disabled = (current.viewYear === SY && current.viewMonth >= SEASON_MAX_MONTH);
   }
