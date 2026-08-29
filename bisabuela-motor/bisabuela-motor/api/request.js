@@ -58,7 +58,14 @@ module.exports = async function handler(req, res) {
       guests,
     });
 
-    await email.sendGuestConfirmationEmail({ guestEmail, guestName, room: roomName, checkin, checkout });
+    // El email al dueño es lo importante -- ya se ha enviado y la fila ya está en el Sheet.
+    // Si falla la confirmación al huésped (por ejemplo, por no tener aún un dominio de envío
+    // verificado en Resend) no queremos que la solicitud entera parezca haber fallado.
+    try {
+      await email.sendGuestConfirmationEmail({ guestEmail, guestName, room: roomName, checkin, checkout });
+    } catch (guestEmailErr) {
+      console.error('No se pudo enviar el email de confirmación al huésped:', guestEmailErr);
+    }
 
     res.status(200).json({ ok: true });
   } catch (err) {
