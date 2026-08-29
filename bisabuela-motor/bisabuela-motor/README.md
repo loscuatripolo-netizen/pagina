@@ -50,9 +50,10 @@ configuradas ahí:
    Martina](https://docs.google.com/spreadsheets/d/11dae-73L9JZUTUOP3h1lz-1COLled2UvR_9lc93kH3o/edit)
    (7 pestañas, una por habitación). Solo falta el paso 2 de abajo para conectarlo de
    verdad a la web.
-2. **Crear la cuenta de servicio de Google** que usa el código para leer y escribir en esa
-   hoja (ver más abajo). Esto lo puede montar guillem con su propia cuenta de Google, no
-   depende de la posada.
+2. ~~Crear la cuenta de servicio de Google~~ -- la política de seguridad de la
+   organización de Google Cloud de guillem bloquea crear claves de cuenta de servicio, así
+   que en su lugar el Sheet se lee (y se marca) a través de un Google Apps Script publicado
+   como aplicación web (ver más abajo). Ya está montado y probado.
 3. **Fotos reales de las 7 habitaciones**, y si es posible los **metros cuadrados** de cada
    una -- ahora mismo el modal usa un icono de sitio, no una foto, porque no hay fotos
    reales todavía. En cuanto lleguen, sustituyen a `.rm-gallery-ph` en el HTML.
@@ -64,19 +65,26 @@ configuradas ahí:
 Nada de esto necesita esperar a Beds24 ni a ningún PMS -- por eso este camino es más rápido
 que el que planteamos al principio.
 
-## Conectar el Google Sheet (paso técnico, lo hace guillem)
+## Conectar el Google Sheet
 
-1. En [console.cloud.google.com](https://console.cloud.google.com), crear un proyecto
-   nuevo (gratis) y activar la "Google Sheets API".
-2. Crear una cuenta de servicio (IAM y administración → Cuentas de servicio → Crear), y
-   generar una clave en formato JSON -- se descarga un archivo.
-3. Copiar el contenido de ese archivo JSON, en una sola línea, a `GOOGLE_SERVICE_ACCOUNT_JSON`.
-4. Compartir el [Google Sheet](https://docs.google.com/spreadsheets/d/11dae-73L9JZUTUOP3h1lz-1COLled2UvR_9lc93kH3o/edit)
-   con el email de esa cuenta de servicio (algo tipo
-   `nombre@proyecto.iam.gserviceaccount.com`), como si fuera un colaborador más, con
-   permiso de "Editor".
-5. Copiar el ID de la hoja (`11dae-73L9JZUTUOP3h1lz-1COLled2UvR_9lc93kH3o`, el trozo largo
-   de la URL) a `SHEET_SPREADSHEET_ID`.
+En vez de una cuenta de servicio (bloqueada por política de la organización), el Sheet se
+lee y se marca a través de un **Google Apps Script** publicado como aplicación web,
+ejecutándose con la propia cuenta que es dueña del Sheet -- no hace falta ninguna
+credencial de Google Cloud.
+
+- `GET  <url>`                       → `{ sheets: [...nombres de las 7 pestañas...] }`
+- `GET  <url>?sheet=NombreDePestaña` → `{ sheet, rows: [{ Fecha, Día, Estado }, ...] }`
+- `POST <url>` con `{ sheet, dates: ["YYYY-MM-DD", ...] }` → pone "Ocupado" en esas fechas
+  de esa pestaña (lo usa el código al recibir una solicitud por la web).
+
+Solo hace falta una variable de entorno en Vercel:
+
+- `SHEETS_APPS_SCRIPT_URL`: la URL del Apps Script publicado (termina en `/exec`).
+
+**Importante:** el `doPost` (para que las solicitudes por la web bloqueen la fecha en el
+Sheet) tiene que estar publicado en el mismo Apps Script para que el paso 3 del ciclo
+completo (más abajo) funcione. Si el Apps Script todavía solo tiene el `doGet`, las
+solicitudes de reserva fallarán al intentar marcar la fecha como ocupada.
 
 ## Desplegar
 
@@ -84,14 +92,17 @@ Pensado para Vercel (ya tenéis GitHub conectado a Vercel de antes):
 
 1. Subir esta carpeta a un repo de GitHub.
 2. Importar el repo en Vercel.
-3. Añadir las variables de entorno de `.env.example` en el proyecto de Vercel.
+3. Añadir en Vercel (Settings → Environment Variables) `SHEETS_APPS_SCRIPT_URL`,
+   `RESEND_API_KEY`, `EMAIL_FROM` y `OWNER_EMAIL`.
 4. Cambiar `MOCK_SHEET` a `false`.
+5. Volver a desplegar (Deployments → Redeploy) -- las variables de entorno nuevas no se
+   aplican al deployment que ya estaba corriendo, hace falta un redeploy.
 
 ## Cómo queda el ciclo completo
 
 1. El huésped entra en la web, abre una habitación, ve el calendario real y elige fechas.
 2. Pulsa "Enviar solicitud de reserva" -- no paga nada todavía.
-3. El sistema anota esas fechas como "Pendiente-Web" en el Google Sheet (para que no se le
+3. El sistema marca esas fechas como "Ocupado" en el Google Sheet (para que no se le
    ofrezcan a otra persona mientras el dueño decide) y manda un email al dueño con todos
    los datos, y otro de confirmación al huésped.
 4. El dueño comprueba disponibilidad de verdad, bloquea esas fechas en Booking.com y
