@@ -2,8 +2,5 @@
   "name": "bisabuela-motor",
   "version": "0.1.0",
   "private": true,
-  "description": "Backend del sistema de solicitudes de reserva de Bisabuela Martina (Google Sheets + email), pensado para desplegarse como funciones serverless en Vercel.",
-  "dependencies": {
-    "googleapis": "^144.0.0"
-  }
+  "description": "Backend del sistema de solicitudes de reserva de Bisabuela Martina (Google Sheets + email), pensado para desplegarse como funciones serverless en Vercel."
 }
