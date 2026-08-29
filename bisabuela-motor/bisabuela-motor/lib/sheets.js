@@ -1,17 +1,35 @@
-// Cliente del Google Sheet que hace de "base de datos" de reservas ocupadas
-// (calendario-bisabuela-martina.xlsx, subido a Google Sheets).
+// Cliente del Google Sheet que hace de "calendario" de habitaciones ocupadas.
 //
 // Usa la Google Sheets API v4 con una cuenta de servicio (no una cuenta de Google
 // normal -- ver README.md para cómo se crea y se comparte con la hoja).
 //
-// La hoja tiene una pestaña "Reservas" con columnas: Habitación | Entrada | Salida | Origen | Notas
-// (fila 1-3 son título/subtítulo, fila 4 es la cabecera, los datos empiezan en la fila 5).
+// La hoja tiene 7 pestañas, una por cada habitación física (unidad), con columnas
+// Fecha | Día | Estado (fila 1 es la cabecera, los datos empiezan en la fila 2).
+// Para marcar un día como ocupado, el dueño escribe cualquier texto en la columna
+// "Estado" de esa fila (por ejemplo "Ocupado" o el nombre del huésped); dejarla en
+// blanco significa que ese día está libre. El propio calendario ya viene generado
+// con las fechas puestas -- solo hay que rellenar la columna Estado a mano.
 
 const mock = require('./mock-data');
 
 const MOCK = String(process.env.MOCK_SHEET || 'true').toLowerCase() === 'true';
-const SHEET_NAME = 'Reservas';
-const DATA_RANGE = `${SHEET_NAME}!A5:E304`; // deja margen de sobra bajo el ejemplo
+
+// Fila 2 de cada pestaña de calendario = este día. Tiene que coincidir con la fecha
+// que hay de verdad en la celda A2 del Google Sheet (ver README). Cubre la temporada
+// de apertura de la posada (junio-agosto); hay que regenerar el Sheet y actualizar
+// estas dos constantes cuando se acerque la siguiente temporada.
+const START_DATE = '2027-06-01';
+// Cuántos días de calendario hay generados en cada pestaña (filas 2..1+CALENDAR_DAYS).
+// 2027-06-01 a 2027-08-31 = 30 + 31 + 31 días.
+const CALENDAR_DAYS = 92;
+
+// Qué pestañas (unidades físicas) corresponden a cada tipo de habitación.
+const ROOM_UNITS = {
+  'Doble Basic': ['Doble Basic 1', 'Doble Basic 2'],
+  Doble: ['Doble 1', 'Doble 2', 'Doble 3'],
+  Triple: ['Triple'],
+  Cuádruple: ['Cuádruple'],
+};
 
 let sheetsClient = null;
 
@@ -21,10 +39,7 @@ async function getClient() {
   const { google } = require('googleapis');
   const keyJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
   if (!keyJson) {
-    throw new Error(
-      'Falta GOOGLE_SERVICE_ACCOUNT_JSON (la clave de la cuenta de servicio, en una sola línea). ' +
-      'Ver README.md -- "Conectar el Google Sheet".'
-    );
+    throw new Error('Falta GOOGLE_SERVICE_ACCOUNT_JSON (la clave de la cuenta de servicio). Ver README.md.');
   }
   const credentials = JSON.parse(keyJson);
   const auth = new google.auth.GoogleAuth({
@@ -41,61 +56,101 @@ function spreadsheetId() {
   return id;
 }
 
-// Lee todas las filas de la pestaña "Reservas" y las convierte en objetos.
+function rowForDate(dateStr) {
+  const days = Math.round((new Date(dateStr + 'T00:00:00Z') - new Date(START_DATE + 'T00:00:00Z')) / 86400000);
+  return 2 + days; // la fila 1 es la cabecera
+}
+
+function dateForRow(row) {
+  return addDays(START_DATE, row - 2);
+}
+
+// Lee las 7 pestañas de calendario y las convierte en bloques ocupados
+// { room, checkin, checkout, origin, notes }, igual que si viniera de una lista de
+// reservas -- así el resto del código (getAvailability, getMonthAvailability...) no
+// necesita saber nada del formato de calendario.
 async function readRows() {
   if (MOCK) return mock.MOCK_ROWS;
 
   const sheets = await getClient();
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: spreadsheetId(),
-    range: DATA_RANGE,
-  });
-  const rows = res.data.values || [];
-  return rows
-    .filter((r) => r[0] && r[1] && r[2]) // habitación + entrada + salida como mínimo
-    .map((r) => ({
-      room: r[0],
-      checkin: toISODate(r[1]),
-      checkout: toISODate(r[2]),
-      origin: r[3] || '',
-      notes: r[4] || '',
-    }));
+  const rows = [];
+  for (const [roomName, units] of Object.entries(ROOM_UNITS)) {
+    for (const unitName of units) {
+      const res = await sheets.spreadsheets.values.get({
+        spreadsheetId: spreadsheetId(),
+        range: `'${unitName}'!C2:C${1 + CALENDAR_DAYS}`,
+      });
+      const values = res.data.values || [];
+      let blockStartRow = null;
+      for (let i = 0; i < values.length; i++) {
+        const occupied = Boolean(values[i][0] && values[i][0].trim());
+        const row = i + 2;
+        if (occupied && blockStartRow === null) blockStartRow = row;
+        if (!occupied && blockStartRow !== null) {
+          rows.push({ room: roomName, checkin: dateForRow(blockStartRow), checkout: dateForRow(row), origin: unitName, notes: '' });
+          blockStartRow = null;
+        }
+      }
+      if (blockStartRow !== null) {
+        rows.push({ room: roomName, checkin: dateForRow(blockStartRow), checkout: dateForRow(2 + values.length), origin: unitName, notes: '' });
+      }
+    }
+  }
+  return rows;
 }
 
-// Añade una fila nueva al final de los datos (usado por api/request.js para dejar la
-// solicitud como "Pendiente-Web" en cuanto entra, y así no se le ofrezca dos veces a otra
-// persona mientras el dueño la confirma).
+// Busca, entre las unidades de ese tipo de habitación, una que esté libre en todo el
+// rango de fechas pedido.
+async function findFreeUnit(roomName, checkin, checkout) {
+  const units = ROOM_UNITS[roomName];
+  if (!units) throw new Error(`Habitación desconocida: ${roomName}`);
+
+  const sheets = await getClient();
+  const rowStart = rowForDate(checkin);
+  const rowEndExclusive = rowForDate(checkout);
+  for (const unitName of units) {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: spreadsheetId(),
+      range: `'${unitName}'!C${rowStart}:C${rowEndExclusive - 1}`,
+    });
+    const values = res.data.values || [];
+    const allFree = values.every((r) => !r[0] || !String(r[0]).trim());
+    if (allFree) return unitName;
+  }
+  return null;
+}
+
+// Marca como ocupados, en una unidad libre de ese tipo de habitación, todos los días
+// del rango (usado por api/request.js para dejar la solicitud como "Pendiente-Web" en
+// cuanto entra, y así no se le ofrezca dos veces a otra persona mientras el dueño la
+// confirma).
 async function appendRow({ room, checkin, checkout, origin, notes }) {
   if (MOCK) {
     mock.MOCK_ROWS.push({ room, checkin, checkout, origin, notes });
     return;
   }
+
+  const unitName = await findFreeUnit(room, checkin, checkout);
+  if (!unitName) {
+    throw new Error(`No hay ninguna unidad libre de "${room}" para esas fechas.`);
+  }
+
   const sheets = await getClient();
-  await sheets.spreadsheets.values.append({
+  const rowStart = rowForDate(checkin);
+  const rowEndExclusive = rowForDate(checkout);
+  const values = [];
+  for (let r = rowStart; r < rowEndExclusive; r++) values.push([origin]);
+
+  await sheets.spreadsheets.values.update({
     spreadsheetId: spreadsheetId(),
-    range: DATA_RANGE,
+    range: `'${unitName}'!C${rowStart}:C${rowEndExclusive - 1}`,
     valueInputOption: 'USER_ENTERED',
-    requestBody: { values: [[room, formatDMY(checkin), formatDMY(checkout), origin, notes]] },
+    requestBody: { values },
   });
 }
 
-function toISODate(value) {
-  // Los valores de Sheets pueden llegar como "10/08/2026" (texto) o como número de serie
-  // de fecha -- de(1900). Aquí solo cubrimos el caso texto DD/MM/AAAA, que es el formato
-  // que pide el propio Excel/Sheet.
-  const m = String(value).match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-  if (!m) return String(value);
-  const [, d, mo, y] = m;
-  return `${y}-${mo}-${d}`;
-}
-
-function formatDMY(isoDate) {
-  const [y, m, d] = isoDate.split('-');
-  return `${d}/${m}/${y}`;
-}
-
 // Disponibilidad por tipo de habitación para un rango de fechas: cuántas unidades quedan
-// libres cada noche (mínimo del rango), igual que se explicó en el Excel de referencia.
+// libres cada noche (mínimo del rango).
 async function getAvailability({ checkin, checkout }) {
   const rows = await readRows();
   return mock.ROOMS.map((room) => {
