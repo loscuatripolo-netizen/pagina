@@ -1,27 +1,23 @@
 // Cliente del Google Sheet que hace de "calendario" de habitaciones ocupadas.
 //
-// Usa la Google Sheets API v4 con una cuenta de servicio (no una cuenta de Google
-// normal -- ver README.md para cómo se crea y se comparte con la hoja).
+// La política de seguridad de la organización de Google Cloud del dueño bloquea crear
+// claves de cuenta de servicio, así que en vez de la API de Sheets con credenciales,
+// leemos (y marcamos) el Sheet a través de un Google Apps Script publicado como
+// aplicación web, que se ejecuta con la propia cuenta que es dueña del Sheet -- no hace
+// falta ninguna credencial de Google Cloud.
+//
+//   GET  <SHEETS_APPS_SCRIPT_URL>                       -> { sheets: [...pestañas...] }
+//   GET  <SHEETS_APPS_SCRIPT_URL>?sheet=NombreDePestaña -> { sheet, rows: [{ Fecha, Día, Estado }, ...] }
+//   POST <SHEETS_APPS_SCRIPT_URL>  { sheet, dates: [...] } -> pone "Ocupado" en esas fechas de esa pestaña
 //
 // La hoja tiene 7 pestañas, una por cada habitación física (unidad), con columnas
-// Fecha | Día | Estado (fila 1 es la cabecera, los datos empiezan en la fila 2). La
-// columna Estado tiene un desplegable con dos opciones: "Libre" u "Ocupado". Para marcar
-// un día como ocupado, el dueño cambia esa celda a "Ocupado"; en blanco o "Libre" es que
-// ese día está libre. El propio calendario ya viene generado con las fechas puestas --
-// solo hay que cambiar el desplegable de Estado a mano.
+// Fecha | Día | Estado (fila 1 es la cabecera). La columna Estado tiene un desplegable
+// con dos opciones: "Libre" u "Ocupado". Para marcar un día como ocupado a mano, el dueño
+// cambia esa celda a "Ocupado"; en blanco o "Libre" es que ese día está libre.
 
 const mock = require('./mock-data');
 
 const MOCK = String(process.env.MOCK_SHEET || 'true').toLowerCase() === 'true';
-
-// Fila 2 de cada pestaña de calendario = este día. Tiene que coincidir con la fecha
-// que hay de verdad en la celda A2 del Google Sheet (ver README). Cubre la temporada
-// de apertura de la posada (junio-agosto); hay que regenerar el Sheet y actualizar
-// estas dos constantes cuando se acerque la siguiente temporada.
-const START_DATE = '2027-06-01';
-// Cuántos días de calendario hay generados en cada pestaña (filas 2..1+CALENDAR_DAYS).
-// 2027-06-01 a 2027-08-31 = 30 + 31 + 31 días.
-const CALENDAR_DAYS = 92;
 
 // Qué pestañas (unidades físicas) corresponden a cada tipo de habitación.
 const ROOM_UNITS = {
@@ -31,38 +27,10 @@ const ROOM_UNITS = {
   Cuádruple: ['Cuádruple'],
 };
 
-let sheetsClient = null;
-
-async function getClient() {
-  if (sheetsClient) return sheetsClient;
-
-  const { google } = require('googleapis');
-  const keyJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-  if (!keyJson) {
-    throw new Error('Falta GOOGLE_SERVICE_ACCOUNT_JSON (la clave de la cuenta de servicio). Ver README.md.');
-  }
-  const credentials = JSON.parse(keyJson);
-  const auth = new google.auth.GoogleAuth({
-    credentials,
-    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-  });
-  sheetsClient = google.sheets({ version: 'v4', auth });
-  return sheetsClient;
-}
-
-function spreadsheetId() {
-  const id = process.env.SHEET_SPREADSHEET_ID;
-  if (!id) throw new Error('Falta SHEET_SPREADSHEET_ID (el ID de la hoja, en la URL de Google Sheets).');
-  return id;
-}
-
-function rowForDate(dateStr) {
-  const days = Math.round((new Date(dateStr + 'T00:00:00Z') - new Date(START_DATE + 'T00:00:00Z')) / 86400000);
-  return 2 + days; // la fila 1 es la cabecera
-}
-
-function dateForRow(row) {
-  return addDays(START_DATE, row - 2);
+function scriptUrl() {
+  const url = process.env.SHEETS_APPS_SCRIPT_URL;
+  if (!url) throw new Error('Falta SHEETS_APPS_SCRIPT_URL (la URL del Apps Script publicado). Ver README.md.');
+  return url;
 }
 
 // Una celda de la columna Estado cuenta como "ocupado" solo si dice literalmente
@@ -72,6 +40,39 @@ function isOcupado(cellValue) {
   return String(cellValue || '').trim().toLowerCase() === 'ocupado';
 }
 
+// Pide al Apps Script las filas (Fecha/Día/Estado) de una pestaña.
+async function fetchUnitRows(unitName) {
+  const res = await fetch(`${scriptUrl()}?sheet=${encodeURIComponent(unitName)}`);
+  if (!res.ok) {
+    throw new Error(`El Apps Script del Sheet respondió ${res.status} al pedir la pestaña "${unitName}".`);
+  }
+  const data = await res.json();
+  if (!data || !Array.isArray(data.rows)) {
+    throw new Error(`Respuesta inesperada del Apps Script del Sheet para "${unitName}".`);
+  }
+  return data.rows; // [{ Fecha: 'YYYY-MM-DD', Día: '...', Estado: 'Libre' | 'Ocupado' }, ...]
+}
+
+// Convierte las filas (en orden de fecha) de una pestaña en bloques ocupados contiguos.
+function rowsToBlocks(rows) {
+  const blocks = [];
+  let blockStart = null;
+  let lastDate = null;
+  for (const row of rows) {
+    const occupied = isOcupado(row.Estado);
+    if (occupied && blockStart === null) blockStart = row.Fecha;
+    if (!occupied && blockStart !== null) {
+      blocks.push({ checkin: blockStart, checkout: row.Fecha });
+      blockStart = null;
+    }
+    lastDate = row.Fecha;
+  }
+  if (blockStart !== null) {
+    blocks.push({ checkin: blockStart, checkout: addDays(lastDate, 1) });
+  }
+  return blocks;
+}
+
 // Lee las 7 pestañas de calendario y las convierte en bloques ocupados
 // { room, checkin, checkout, origin, notes }, igual que si viniera de una lista de
 // reservas -- así el resto del código (getAvailability, getMonthAvailability...) no
@@ -79,27 +80,12 @@ function isOcupado(cellValue) {
 async function readRows() {
   if (MOCK) return mock.MOCK_ROWS;
 
-  const sheets = await getClient();
   const rows = [];
   for (const [roomName, units] of Object.entries(ROOM_UNITS)) {
     for (const unitName of units) {
-      const res = await sheets.spreadsheets.values.get({
-        spreadsheetId: spreadsheetId(),
-        range: `'${unitName}'!C2:C${1 + CALENDAR_DAYS}`,
-      });
-      const values = res.data.values || [];
-      let blockStartRow = null;
-      for (let i = 0; i < values.length; i++) {
-        const occupied = isOcupado(values[i][0]);
-        const row = i + 2;
-        if (occupied && blockStartRow === null) blockStartRow = row;
-        if (!occupied && blockStartRow !== null) {
-          rows.push({ room: roomName, checkin: dateForRow(blockStartRow), checkout: dateForRow(row), origin: unitName, notes: '' });
-          blockStartRow = null;
-        }
-      }
-      if (blockStartRow !== null) {
-        rows.push({ room: roomName, checkin: dateForRow(blockStartRow), checkout: dateForRow(2 + values.length), origin: unitName, notes: '' });
+      const unitRows = await fetchUnitRows(unitName);
+      for (const block of rowsToBlocks(unitRows)) {
+        rows.push({ room: roomName, checkin: block.checkin, checkout: block.checkout, origin: unitName, notes: '' });
       }
     }
   }
@@ -112,16 +98,11 @@ async function findFreeUnit(roomName, checkin, checkout) {
   const units = ROOM_UNITS[roomName];
   if (!units) throw new Error(`Habitación desconocida: ${roomName}`);
 
-  const sheets = await getClient();
-  const rowStart = rowForDate(checkin);
-  const rowEndExclusive = rowForDate(checkout);
   for (const unitName of units) {
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: spreadsheetId(),
-      range: `'${unitName}'!C${rowStart}:C${rowEndExclusive - 1}`,
-    });
-    const values = res.data.values || [];
-    const allFree = values.every((r) => !isOcupado(r[0]));
+    const rows = await fetchUnitRows(unitName);
+    const allFree = rows
+      .filter((r) => r.Fecha >= checkin && r.Fecha < checkout)
+      .every((r) => !isOcupado(r.Estado));
     if (allFree) return unitName;
   }
   return null;
@@ -130,6 +111,10 @@ async function findFreeUnit(roomName, checkin, checkout) {
 // Marca como "Ocupado", en una unidad libre de ese tipo de habitación, todos los días
 // del rango (usado por api/request.js en cuanto entra una solicitud web, para que esas
 // fechas no se le ofrezcan a otra persona mientras el dueño la confirma).
+//
+// Necesita que el Apps Script tenga también un doPost que acepte
+// { sheet: "<nombre de pestaña>", dates: ["YYYY-MM-DD", ...] } y ponga "Ocupado" en la
+// columna Estado de esas fechas, en esa pestaña.
 async function appendRow({ room, checkin, checkout, origin, notes }) {
   if (MOCK) {
     mock.MOCK_ROWS.push({ room, checkin, checkout, origin, notes });
@@ -141,21 +126,17 @@ async function appendRow({ room, checkin, checkout, origin, notes }) {
     throw new Error(`No hay ninguna unidad libre de "${room}" para esas fechas.`);
   }
 
-  const sheets = await getClient();
-  const rowStart = rowForDate(checkin);
-  const rowEndExclusive = rowForDate(checkout);
-  // La columna Estado solo admite "Libre" u "Ocupado" (desplegable de validación de
-  // datos) -- el nombre del huésped y demás detalles van en el email al dueño, no en la
-  // hoja.
-  const values = [];
-  for (let r = rowStart; r < rowEndExclusive; r++) values.push(['Ocupado']);
+  const dates = [];
+  for (let d = checkin; d < checkout; d = addDays(d, 1)) dates.push(d);
 
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: spreadsheetId(),
-    range: `'${unitName}'!C${rowStart}:C${rowEndExclusive - 1}`,
-    valueInputOption: 'USER_ENTERED',
-    requestBody: { values },
+  const res = await fetch(scriptUrl(), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sheet: unitName, dates }),
   });
+  if (!res.ok) {
+    throw new Error(`El Apps Script del Sheet no pudo marcar "${unitName}" como ocupado (${res.status}).`);
+  }
 }
 
 // Disponibilidad por tipo de habitación para un rango de fechas: cuántas unidades quedan
