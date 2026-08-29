@@ -37,7 +37,31 @@ async function send({ to, subject, html }) {
   return res.json();
 }
 
+// Construye un enlace mailto: con el email de aceptación ya redactado y dirigido al huésped,
+// para que el dueño solo tenga que pulsarlo, revisar y darle a enviar desde su propio cliente
+// de correo. No se envía nada automáticamente -- el dueño es quien decide y pulsa "Enviar".
+function buildAcceptanceMailto({ guestEmail, guestName, room, checkin, checkout, nights, totalPrice }) {
+  const subject = `Confirmación de tu reserva en Bisabuela Martina`;
+  const body = `Hola ${guestName},
+
+¡Tenemos buenas noticias! Confirmamos tu reserva en Bisabuela Martina:
+
+Habitación: ${room}
+Fechas: ${checkin} a ${checkout} (${nights} noches)
+Precio total: ${totalPrice} €
+
+En breve te enviaremos un enlace de pago para formalizar la reserva. Si tienes cualquier duda, puedes responder a este mismo email.
+
+¡Te esperamos!
+
+Un saludo,
+Bisabuela Martina`;
+
+  return `mailto:${encodeURIComponent(guestEmail)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+}
+
 async function sendOwnerRequestEmail({ ownerEmail, room, checkin, checkout, nights, totalPrice, guestName, guestEmail, guestPhone, guests }) {
+  const acceptanceMailto = buildAcceptanceMailto({ guestEmail, guestName, room, checkin, checkout, nights, totalPrice });
   const html = `
     <h2>Nueva solicitud de reserva -- Bisabuela Martina</h2>
     <p><b>${room}</b> · ${checkin} a ${checkout} (${nights} noches) · ${guests || '?'} huéspedes</p>
@@ -54,6 +78,12 @@ async function sendOwnerRequestEmail({ ownerEmail, room, checkin, checkout, nigh
       <li>Genera un enlace de pago en Stripe por ${totalPrice} € y respóndele a ${guestEmail} con el enlace.</li>
       <li>Marca la fila de esta solicitud en la hoja de cálculo como confirmada (o bórrala si no se puede atender).</li>
     </ol>
+    <p>
+      <a href="${acceptanceMailto}" style="display:inline-block;background:#2e7d32;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;">
+        Aceptar reserva (redacta el email al huésped)
+      </a>
+    </p>
+    <p style="color:#666;font-size:13px;">Este botón abre tu propio correo con un email de confirmación ya escrito para ${guestName}. Revísalo (por ejemplo, añade el enlace de pago si ya lo tienes) y dale a enviar cuando estés listo -- no se envía nada automáticamente.</p>
   `;
   return send({ to: process.env.OWNER_EMAIL || ownerEmail || 'loscuatripolo@gmail.com', subject: `Solicitud de reserva: ${room}, ${checkin}`, html });
 }
