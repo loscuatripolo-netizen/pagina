@@ -10,7 +10,6 @@
 
 const sheets = require('../lib/sheets');
 const email = require('../lib/email');
-const cache = require('../lib/cache');
 
 module.exports = async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -40,10 +39,6 @@ module.exports = async function handler(req, res) {
       origin: 'Pendiente-Web',
       notes: `${guestName} · ${guestEmail} · ${guestPhone || 'sin teléfono'} · ${guests || '?'} huéspedes`,
     });
-
-    // Ya no vale lo que había en caché -- refrescar en la próxima consulta.
-    cache.clearPrefix('rooms:');
-    cache.clearPrefix('month:');
 
     await email.sendOwnerRequestEmail({
       ownerEmail: process.env.OWNER_EMAIL,
