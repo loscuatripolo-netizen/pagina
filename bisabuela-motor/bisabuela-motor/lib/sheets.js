@@ -10,21 +10,28 @@
 //   GET  <SHEETS_APPS_SCRIPT_URL>?sheet=NombreDePestaña -> { sheet, rows: [{ Fecha, Día, Estado }, ...] }
 //   POST <SHEETS_APPS_SCRIPT_URL>  { sheet, dates: [...] } -> pone "Ocupado" en esas fechas de esa pestaña
 //
-// La hoja tiene 7 pestañas, una por cada habitación física (unidad), con columnas
-// Fecha | Día | Estado (fila 1 es la cabecera). La columna Estado tiene un desplegable
-// con dos opciones: "Libre" u "Ocupado". Para marcar un día como ocupado a mano, el dueño
-// cambia esa celda a "Ocupado"; en blanco o "Libre" es que ese día está libre.
+// La hoja tiene 7 pestañas, una por cada habitación física, con columnas Fecha | Día |
+// Estado (fila 1 es la cabecera). La columna Estado tiene un desplegable con dos opciones:
+// "Libre" u "Ocupado". Para marcar un día como ocupado a mano, el dueño cambia esa celda a
+// "Ocupado"; en blanco o "Libre" es que ese día está libre.
+//
+// Cada habitación de la web (Habitación 1, 2, 3...) es exactamente una pestaña -- el
+// huésped elige la habitación concreta que quiere, no un tipo con varias unidades
+// intercambiables.
 
 const mock = require('./mock-data');
 
 const MOCK = String(process.env.MOCK_SHEET || 'true').toLowerCase() === 'true';
 
-// Qué pestañas (unidades físicas) corresponden a cada tipo de habitación.
-const ROOM_UNITS = {
-  'Doble Basic': ['Doble Basic 1', 'Doble Basic 2'],
-  Doble: ['Doble 1', 'Doble 2', 'Doble 3'],
-  Triple: ['Triple'],
-  Cuádruple: ['Cuádruple'],
+// Qué pestaña del Sheet corresponde a cada habitación de la web.
+const ROOM_TAB = {
+  'Habitación 1': 'Doble Basic 1',
+  'Habitación 2': 'Doble Basic 2',
+  'Habitación 3': 'Doble 1',
+  'Habitación 4': 'Doble 2',
+  'Habitación 5': 'Doble 3',
+  'Habitación 6': 'Triple',
+  'Habitación 7': 'Cuádruple',
 };
 
 function scriptUrl() {
@@ -81,36 +88,27 @@ async function readRows() {
   if (MOCK) return mock.MOCK_ROWS;
 
   const rows = [];
-  for (const [roomName, units] of Object.entries(ROOM_UNITS)) {
-    for (const unitName of units) {
-      const unitRows = await fetchUnitRows(unitName);
-      for (const block of rowsToBlocks(unitRows)) {
-        rows.push({ room: roomName, checkin: block.checkin, checkout: block.checkout, origin: unitName, notes: '' });
-      }
+  for (const [roomName, unitName] of Object.entries(ROOM_TAB)) {
+    const unitRows = await fetchUnitRows(unitName);
+    for (const block of rowsToBlocks(unitRows)) {
+      rows.push({ room: roomName, checkin: block.checkin, checkout: block.checkout, origin: unitName, notes: '' });
     }
   }
   return rows;
 }
 
-// Busca, entre las unidades de ese tipo de habitación, una que esté libre en todo el
-// rango de fechas pedido.
-async function findFreeUnit(roomName, checkin, checkout) {
-  const units = ROOM_UNITS[roomName];
-  if (!units) throw new Error(`Habitación desconocida: ${roomName}`);
+// Comprueba si esa habitación (una única pestaña) está libre en todo el rango pedido.
+async function isRoomFree(roomName, checkin, checkout) {
+  const unitName = ROOM_TAB[roomName];
+  if (!unitName) throw new Error(`Habitación desconocida: ${roomName}`);
 
-  for (const unitName of units) {
-    const rows = await fetchUnitRows(unitName);
-    const allFree = rows
-      .filter((r) => r.Fecha >= checkin && r.Fecha < checkout)
-      .every((r) => !isOcupado(r.Estado));
-    if (allFree) return unitName;
-  }
-  return null;
+  const rows = await fetchUnitRows(unitName);
+  return rows.filter((r) => r.Fecha >= checkin && r.Fecha < checkout).every((r) => !isOcupado(r.Estado));
 }
 
-// Marca como "Ocupado", en una unidad libre de ese tipo de habitación, todos los días
-// del rango (usado por api/request.js en cuanto entra una solicitud web, para que esas
-// fechas no se le ofrezcan a otra persona mientras el dueño la confirma).
+// Marca como "Ocupado" todos los días del rango en la pestaña de esa habitación (usado por
+// api/request.js en cuanto entra una solicitud web, para que esas fechas no se le ofrezcan
+// a otra persona mientras el dueño la confirma).
 //
 // El Apps Script tiene un doPost que acepta
 // { sheet: "<nombre de pestaña>", dates: ["YYYY-MM-DD", ...] } y pone "Ocupado" en la
@@ -126,9 +124,12 @@ async function appendRow({ room, checkin, checkout, origin, notes }) {
     return;
   }
 
-  const unitName = await findFreeUnit(room, checkin, checkout);
-  if (!unitName) {
-    throw new Error(`No hay ninguna unidad libre de "${room}" para esas fechas.`);
+  const unitName = ROOM_TAB[room];
+  if (!unitName) throw new Error(`Habitación desconocida: ${room}`);
+
+  const free = await isRoomFree(room, checkin, checkout);
+  if (!free) {
+    throw new Error(`La "${room}" ya no está libre para esas fechas.`);
   }
 
   const dates = [];
@@ -148,8 +149,8 @@ async function appendRow({ room, checkin, checkout, origin, notes }) {
   }
 }
 
-// Disponibilidad por tipo de habitación para un rango de fechas: cuántas unidades quedan
-// libres cada noche (mínimo del rango).
+// Disponibilidad de cada una de las 7 habitaciones para un rango de fechas (0 o 1 unidad
+// libre, porque cada habitación es una sola pestaña, no un grupo con varias).
 async function getAvailability({ checkin, checkout }) {
   const rows = await readRows();
   return mock.ROOMS.map((room) => {
@@ -157,6 +158,7 @@ async function getAvailability({ checkin, checkout }) {
     return {
       roomId: room.roomId,
       name: room.name,
+      type: room.type,
       capacity: room.capacity,
       units: room.units,
       desc: room.desc,
