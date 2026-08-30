@@ -112,9 +112,14 @@ async function findFreeUnit(roomName, checkin, checkout) {
 // del rango (usado por api/request.js en cuanto entra una solicitud web, para que esas
 // fechas no se le ofrezcan a otra persona mientras el dueño la confirma).
 //
-// Necesita que el Apps Script tenga también un doPost que acepte
-// { sheet: "<nombre de pestaña>", dates: ["YYYY-MM-DD", ...] } y ponga "Ocupado" en la
-// columna Estado de esas fechas, en esa pestaña.
+// El Apps Script tiene un doPost que acepta
+// { sheet: "<nombre de pestaña>", dates: ["YYYY-MM-DD", ...] } y pone "Ocupado" en la
+// columna Estado de esas fechas, en esa pestaña. El body se manda como texto plano (no
+// application/json) para que el navegador nunca dispare un preflight OPTIONS -- esta
+// llamada sale siempre de nuestro backend (servidor a servidor), pero así queda blindado
+// aunque en algún momento saliera desde el propio navegador del visitante. El doPost
+// siempre responde 200 (incluso si falla), con el error dentro del cuerpo como
+// { error: "..." }, así que hay que mirar el cuerpo además del status.
 async function appendRow({ room, checkin, checkout, origin, notes }) {
   if (MOCK) {
     mock.MOCK_ROWS.push({ room, checkin, checkout, origin, notes });
@@ -131,11 +136,15 @@ async function appendRow({ room, checkin, checkout, origin, notes }) {
 
   const res = await fetch(scriptUrl(), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     body: JSON.stringify({ sheet: unitName, dates }),
   });
   if (!res.ok) {
     throw new Error(`El Apps Script del Sheet no pudo marcar "${unitName}" como ocupado (${res.status}).`);
+  }
+  const data = await res.json().catch(() => null);
+  if (data && data.error) {
+    throw new Error(`El Apps Script del Sheet no pudo marcar "${unitName}" como ocupado: ${data.error}`);
   }
 }
 
